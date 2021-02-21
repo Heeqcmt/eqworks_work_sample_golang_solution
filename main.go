@@ -29,7 +29,9 @@ type reqToken struct {
 }
 
 var (
-	c     = counters{}
+	c = counters{}
+
+	//token for rate limiting 10 requests/10seconds
 	token = reqToken{
 		token: 10,
 	}
@@ -150,7 +152,7 @@ func main() {
 		}
 	}()
 
-	//reload requestToken every 5 secondss
+	//reload requestToken every 10 secondss
 	go func() {
 		for {
 			select {
