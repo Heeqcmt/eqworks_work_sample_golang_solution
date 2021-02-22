@@ -1,14 +1,18 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type counters struct {
@@ -18,7 +22,7 @@ type counters struct {
 	ContentSelected string
 	TimeSelected    string
 }
-type countersArray struct {
+type contentArray struct {
 	sync.Mutex
 	cArray []counters
 }
@@ -30,14 +34,15 @@ type reqToken struct {
 
 var (
 	c = counters{}
-
+	//db variable
+	db *sql.DB
 	//token for rate limiting 10 requests/10seconds
 	token = reqToken{
 		token: 10,
 	}
 
 	//for storing viewing results
-	cArray  = countersArray{}
+	cArray  = contentArray{}
 	content = []string{"sports", "entertainment", "business", "education"}
 )
 
@@ -98,13 +103,16 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 
 	//read from mockstorage
 	file, _ := ioutil.ReadFile("mockStore.json")
-	data := countersArray{}
+	data := contentArray{}
 	_ = json.Unmarshal([]byte(file), &data.cArray)
 
+	//read from sqlitedb
+	view, click := selectCounter()
 	//print record
 	if len(data.cArray) > 0 {
+		fmt.Fprintf(w, "View: %v \n Click: %v\n", view, click)
 		for i := 0; i < len(data.cArray); i++ {
-			fmt.Fprintf(w, "content: %v \n clicks: %v \n view: %v \n %v\n", data.cArray[i].ContentSelected, data.cArray[i].Click, data.cArray[i].View, data.cArray[i].TimeSelected)
+			fmt.Fprintf(w, "content: %v \n date: %v\n", data.cArray[i].ContentSelected, data.cArray[i].TimeSelected)
 
 		}
 
@@ -125,15 +133,101 @@ func isAllowed() bool {
 	return false
 }
 
-func uploadCounters() error {
+func uploadCounters(view int, click int) error {
+
+	//json file upload containing the array of content selection
 	cArray.Lock()
 	file, _ := json.Marshal(cArray.cArray)
 	_ = ioutil.WriteFile("mockStore.json", file, 0644)
 	cArray.Unlock()
+
+	//sqlite upload containing the current counter data
+	updateCounter(view, click)
+
 	return nil
 }
+func createTable() {
 
+	//sql command for creating the table
+	createTableSQL := `CREATE TABLE counters (
+		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+		"view" integer,
+		"click" integer)`
+
+	statement, err := db.Prepare(createTableSQL)
+
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	//excute the command
+	statement.Exec()
+}
+
+//initialized the table with 0 and 0
+func insertCounter() {
+	insertStatement := `INSERT INTO counters(view,click) VALUES (?,?)`
+	statement, err := db.Prepare(insertStatement)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	_, err = statement.Exec(0, 0)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+}
+
+//upload only updates never insert
+func updateCounter(view int, click int) {
+	updateStatement := `UPDATE counters 
+	SET view = ?,
+	click = ? 
+	WHERE id = 1`
+
+	statement, err := db.Prepare(updateStatement)
+	//fmt.Printf("update counter %v %v", view, click)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	_, err = statement.Exec(view, click)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+}
+
+func selectCounter() (int, int) {
+	var click int
+	var view int
+	row, err := db.Query("SELECT view,click FROM counters WHERE id = 1")
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	defer row.Close()
+	for row.Next() {
+		row.Scan(&view, &click)
+
+	}
+
+	return view, click
+
+}
 func main() {
+
+	//sqlite db prep
+	//create database file s
+	file, err := os.Create("mockStore.db")
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	file.Close()
+	//get sqlite instance
+	db, _ = sql.Open("sqlite3", "./mockStore.db")
+	defer db.Close()
+	//create table
+	createTable()
+	//initializae table
+	insertCounter()
 
 	tickerUpload := time.NewTicker(5 * time.Second)
 	tickerReq := time.NewTicker(10 * time.Second)
@@ -147,7 +241,7 @@ func main() {
 				return
 			case <-tickerUpload.C:
 				fmt.Println("upload called")
-				uploadCounters()
+				uploadCounters(c.View, c.Click)
 			}
 		}
 	}()
